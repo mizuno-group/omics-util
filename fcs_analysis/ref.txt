@@ -1,5 +1,0 @@
-FlowKitのチュートリアル、割と丁寧な印象
-https://flowkit.readthedocs.io/en/latest/notebooks/flowkit-tutorial-part03-gating-strategy-and-gating-results-classes.html
-
-とりあえずの使い方や可視化の参考にした日本語のQiita
-https://qiita.com/kujira_0120/items/8e5d7b54ae3a9f05ae2d

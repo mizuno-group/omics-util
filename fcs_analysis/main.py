@@ -17,8 +17,8 @@ import pandas as pd
 BASE_DIR = "C:/github/omics-util/fcs_analysis"
 os.chdir(BASE_DIR)
 
-import analyzer_utils as au
-import plot_utils as pu
+import src.analyzer_utils as au
+import src.plot_utils as pu
 
 
 def main():

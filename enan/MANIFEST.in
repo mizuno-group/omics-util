@@ -1,0 +1,22 @@
+graft tests
+graft docs
+
+include LICENSE.txt
+include README
+include samplecode.ipynb
+
+prune .git
+
+graft enan/dwh
+graft enan/_test
+
+global-exclude *.pyc
+global-exclude __pycache__
+
+include mart_export_HGNC.pkl
+include mart_export_MGI.pkl
+include mart_export_RGD.pkl
+
+prune __legacy
+
+global-exclude *.pkl

@@ -1,6 +1,9 @@
 # python=3.12
 
 ###### Requirements without Version Specifiers ######
+numpy
 bokeh
+jinja2
 flowkit
+matplotlib
 

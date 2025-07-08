@@ -1,0 +1,18 @@
+fastq2tpm環境の構築
+1. githubよりfastq2tpmをclone
+2. Dockerのworkspaceとなるディレクトリに解析対象データ及びrnaseq-preprocを追加しておく
+3. Devcontainerの使い方を参考にDocker環境を構築
+
+conda環境の確認
+1. Docker構築後、base環境に入る (terminalに入ればすでにbaseになってるはず)
+2. conda activate myenvで実行環境に入る
+3. conda listでfastpとkallistoが入っているかを確認 (特にkallistoのverは確認)
+
+
+fastp→kallistoの実行
+1. conda activate myenvで実行環境に入る
+2. 生物種を指定し、get_index.shを実行する (kallistoのverに注意！)
+3. bash {main.sh path} {index.idx path} {dir containing fastq}で実行！
+
+注意事項
+1. 外付けHDD等をワークスペースにmountする場合、buildの前にmountしておく、後からだと認識しない

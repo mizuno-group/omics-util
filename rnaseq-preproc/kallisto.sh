@@ -93,7 +93,10 @@ work_dir=`dirname ${full1}` # full path
 # kallisto
 f1=`basename "${full1}"`
 n1=`get_filename ${f1}`
-outdir=${work_dir}/KALLISTO_${n1}
+
+mkdir -p /tmp/kallisto_test_out # 250626
+outdir=/tmp/kallisto_test_out/KALLISTO_${n1}
+#outdir=${work_dir}/KALLISTO_${n1}
 
 if "${pe}"; then
   full2=`realpath $3`
@@ -109,3 +112,10 @@ else
     -b ${n_boot} -t ${n_threads} \
     ${full1}
 fi
+
+final_outdir=${work_dir}/KALLISTO_${n1}
+mkdir -p "$final_outdir"
+mv "$outdir"/* "$final_outdir"/
+rmdir "$outdir"
+
+exit 0

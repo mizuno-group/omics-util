@@ -10,7 +10,6 @@ ver=1.0.0
 ########################
 # history
 # 240711 start writing (Tadahaya Mizuno)
-# 250408 fix (Takumi Iwasaka)
 
 ########################
 # preparation
@@ -219,6 +218,7 @@ elif [ ${l1} == ${l2} ]; then
     # obtain the path of the result
     # the path is the first one in the list
     res_path=`find ${work_dir} -maxdepth 1 -name "KALLISTO_*" -print -quit`
+    echo "[DEBUG] res_path = $res_path"
     # move report files to the above
     mv "${work_dir}/report_"* ${res_path}
     # rename the res_path by removing the prefix

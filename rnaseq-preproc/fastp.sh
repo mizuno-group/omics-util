@@ -102,11 +102,11 @@ if "${pe}"; then
     -i ${full1} -I ${full2} \
     -o ${out1} -O ${out2} \
     -h ${html1} -j ${json1} \
-    -3 -q 15 -n 10 -t 1 -T 1 -l 20 -w 16 -f 1 -F 1
+    -3 -q 15 -n 10 -t 1 -T 1 -l 20 -w 4 -f 1 -F 1 # -w 4 <- -w 16 250327 スレッドの制限
 else
   fastp \
     --detect_adapter_for_pe \
     -i ${full1} -o ${out1} \
     -h ${html1} -j ${json1} \
-    -3 -q 15 -n 10 -t 1 -T 1 -l 20 -w 16 -f 1 -F 1
+    -3 -q 15 -n 10 -t 1 -T 1 -l 20 -w 4 -f 1 -F 1 # -w 4 <- -w 16 250327 スレッドの制限
 fi

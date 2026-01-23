@@ -13,6 +13,9 @@ import scanpy as sc
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
+# adataのlog判定で使用、スパースかどうかの確認
+from scipy.sparse import issparse
+
 class BaseSimulator:
     def __init__(self, sample_size, method='dirichlet'):
         self.sample_size = sample_size
@@ -184,6 +187,26 @@ class LiverCellAtlas_Simulator(BaseSimulator):
             # Default path as fallback
             adata_path = f"{self.base_dir}/datasource/scRNASeq/LiverCellAtlas/mouseStStAll/processed/liver_adata_148202x19052.h5ad"
             adata = sc.read_h5ad(adata_path)
+
+        # log1p変換が行われているか判定 ==============================
+        if 'log1p' in adata.uns:
+            print("Log-transformation detected in adata.uns.")
+            # 元のデータを一応バックアップ
+            if 'log1p' not in adata.layers:
+                adata.layers['log1p'] = adata.X.copy()
+
+            # 逆変換を実行: exp(x) - 1
+            if issparse(adata.X):
+                # 疎行列の場合はデータ部分のみを計算
+                adata.X.data = np.expm1(adata.X.data)
+            else:
+                # 通常の行列の場合
+                adata.X = np.expm1(adata.X)
+
+            del adata.uns['log1p'] # 完全に消す場合
+        else:
+            pass
+        # ==========================================================
 
         total_cells = self.summary_df.columns.tolist()
         pooled_exp = []

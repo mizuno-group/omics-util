@@ -17,14 +17,73 @@ from tqdm import tqdm
 from scipy.sparse import issparse
 
 class BaseSimulator:
-    def __init__(self, sample_size, method='dirichlet'):
+    def __init__(self, adata, sample_size, method='dirichlet'):
         self.sample_size = sample_size
-        self.method = method
+        self.method = method # 現在はディリクレ分布と一様分布のみ
         self.summary_df = None
         self.cell_idx_dict = None
-        self.adata = None
+        self.adata = adata
+        self.filter_dict = None
+
+        # 各組織で3つのグループを定義
+        self.parenchymal_cells = []  # 組織の主機能を担う細胞 (P)
+        self.supporting_cells = []   # 構造・維持・支持細胞 (S)
+        self.immune_cells = [] # 免疫細胞 (I)
+
+    # initで指定したmethodでassign
+    # 後で下のやつと統合する
+    def assign(self, group_weights=None, **kwargs):
+        method_name = f"_assign_{self.method}"
+        if not hasattr(self, method_name):
+            raise ValueError(f"Method {method_name} not found.")
+        func = getattr(self, method_name)
+        
+        # 各グループ内部での比率を計算
+        # 各関数の戻り値は (sample_size, 各グループの細胞種数) の DataFrame
+        p_df = func(self.parenchymal_cells, **kwargs) if self.parenchymal_cells else None
+        s_df = func(self.supporting_cells, **kwargs) if self.supporting_cells else None
+        i_df = func(self.immune_cells, **kwargs) if self.immune_cells else None
+
+        # 特定のグループがない可能性を考慮
+        group_dfs = [
+            ('P', p_df),
+            ('S', s_df),
+            ('I', i_df)
+            ]
+        active_groups = [(name, df) for name, df in group_dfs if df is not None]
+
+        # グループ間の重み付け
+        if group_weights is not None:
+            # 指定された固定重みを使用
+            weights = np.array(group_weights)
+            mask = [df is not None for _, df in group_dfs]
+            active_w = weights[mask]
+            active_w = active_w / active_w.sum()
+            active_ratios = np.tile(active_w, (self.sample_size, 1))
+        else:
+            # 重み指定がない場合、グループ間の比率もランダムに決定 (Dirichlet alpha=1.0)
+            n_groups = len(active_groups)
+            active_ratios = np.random.dirichlet([1.0] * n_groups, size=self.sample_size)
+
+
+        # 統合とスケーリング
+        summaries = []
+        for g_idx, (name, df) in enumerate(active_groups):
+            if df is None:
+                continue
+
+            df_scaled = df.mul(active_ratios[:, g_idx], axis=0)
+            summaries.append(df_scaled)
+
+        # 全細胞種を結合
+        self.summary_df = pd.concat(summaries, axis=1)
+        # 最後に全体で合計1になるよう微調整 (なくてもいいかも？)
+        self.summary_df = self.summary_df.div(self.summary_df.sum(axis=1), axis=0)
+        return self.summary_df
+                
     
-    def assign_uniform(self, cell_types: list, sparse=True):
+    # 一様分布で細胞比率を決定
+    def _assign_uniform(self, cell_types: list, sparse=True):
         """Generate uniform distribution for cell type proportions."""
         final_res = []
         for idx in range(self.sample_size):
@@ -51,10 +110,10 @@ class BaseSimulator:
         
         return pd.DataFrame(final_res, columns=cell_types)
     
-    def assign_dirichlet(self, cell_types: list, alpha=1.0, do_viz=False):
+    # ディリクレ分布で細胞比率を決定
+    def _assign_dirichlet(self, cell_types: list, alpha=1.0, do_viz=False):
         """Generate Dirichlet distribution for cell type proportions."""
         alpha_vec = [alpha] * len(cell_types)
-        np.random.seed(seed=42)
         data = np.random.dirichlet(alpha_vec, size=self.sample_size)
 
         if do_viz and len(cell_types) > 1:
@@ -83,82 +142,44 @@ class BaseSimulator:
         return ref_df
     
     def _get_expression_matrix(self):
+        # 細胞×遺伝子のnp.arrayを獲得
         """Helper method to get expression matrix from adata."""
         if hasattr(self.adata.X, 'todense'):
             return np.array(self.adata.X.todense())
         else:
             return np.array(self.adata.X)
-    def assign(self, nonim_w=None):
-        """Assign cell type proportions using specified method."""
-        methods = {
-            'uniform_sparse': lambda types: self.assign_uniform(types, sparse=True),
-            'uniform': lambda types: self.assign_uniform(types, sparse=False), 
-            'dirichlet': lambda types: self.assign_dirichlet(types, alpha=1.0)
-        }
-        
-        if self.method not in methods:
-            raise ValueError(f"Method not supported. Choose from: {list(methods.keys())}")
-        
-        # Generate proportions for immune and non-immune cells
-        im_summary = methods[self.method](self.immune_cells)
-        non_im_summary = methods[self.method](self.non_immune_cells)
-        
-        # Normalize to sum to 1
-        self.im_summary = im_summary.div(im_summary.sum(axis=1), axis=0)
-        self.non_im_summary = non_im_summary.div(non_im_summary.sum(axis=1), axis=0)
 
-        # Apply random weights if specified
-        if nonim_w is not None:
-            random_w = np.random.uniform(low=nonim_w, high=1.0, size=self.sample_size)
-            for i in range(self.sample_size):
-                w = random_w[i]
-                self.im_summary.iloc[i] *= (1 - w)
-                self.non_im_summary.iloc[i] *= w
-
-        # Combine and normalize final result
-        summary_df = pd.concat([self.im_summary, self.non_im_summary], axis=1)
-        self.summary_df = summary_df.div(summary_df.sum(axis=1), axis=0)
-    
-    def set_data(self, summary_df=None, cell_idx_dict=None, adata=None):
-        if summary_df is not None:
-            self.summary_df = summary_df
-        if cell_idx_dict is not None:
-            self.cell_idx_dict = cell_idx_dict
-        if adata is not None:
-            self.adata = adata
-
-class LiverCellAtlas_Simulator(BaseSimulator):
-    def __init__(self, sample_size=8000, method='dirichlet', base_dir=None):
-        super().__init__(sample_size, method)
-        self.base_dir = base_dir or "/workspace/cluster/HDD/azuma/TopicModel_Deconv"
-        self.immune_cells = ['Neutrophils', 'Monocytes & Monocyte-derived cells', 'Kupffer cells', 
-                           'NK cells', 'T cells', 'B cells', 'pDCs', 'cDC1s', 'cDC2s']
-        self.non_immune_cells = ['Hepatocytes', 'Cholangiocytes', 'Fibroblasts']
-
-        self.filter_dict = {
-            'Neutrophils': 'Neutrophils', 'Monocytes & Monocyte-derived cells': 'Monocytes',
-            'Kupffer cells': 'Kupffer', 'NK cells': 'NK', 'T cells': 'T', 'B cells': 'B',
-            'pDCs': 'pDCs', 'cDC1s': 'cDC1s', 'cDC2s': 'cDC2s',
-            'Hepatocytes': 'Hepatocytes', 'Cholangiocytes': 'Cholangiocytes', 'Fibroblasts': 'Fibroblasts'
-        }
-    
-    def split_cell_idx(self, save_dir='./data/cell_idx', train_ratio=0.7):
+    # ほぼ共通なのでBaseSimulater内部に移動、target_colを外部指定にして汎用性獲得
+    # trainのみが欲しいときはtrain_ratio=1.0でcreate_sim_bulkでmode='train'にすればOK
+    def split_cell_idx(self, target_col='cell_type', save_dir='./data/cell_idx', train_ratio=0.7):
         """Split cell indices into train/test sets."""
         if self.adata is None:
             raise ValueError("adata must be set before splitting cell indices")
+
+        # 共通のシード (ループの外に出したほうがよい？)
+        random.seed(42)
+        np.random.seed(42)
+
+        info_df = self.adata.obs
             
-        cell_types = self.immune_cells + self.non_immune_cells
+        # 分割の仕方は一旦これでいいか？
+        cell_types = self.parenchymal_cells + self.supporting_cells + self.immune_cells
         cell_idx_dict = {}
         
         for cell in cell_types:
-            cellname = self.filter_dict[cell]
-            cell_mask = self.adata.obs['cell_type'] == cell
-            target_idx = list(range(cell_mask.sum()))
+            cellname = self.filter_dict[cell] if self.filter_dict is not None else cell
+            cell_mask = info_df[target_col] == cell # target_colを外部指定にして汎用性を獲得
+            target_idx = np.where(cell_mask)[0].tolist() # whereにして位置をしっかりと獲得
             cell_size = len(target_idx)
-            print(f"{cell}: {cell_size} cells detected")
+
+            # 細胞が検出されなかったときは警告
+            if cell_size == 0:
+                print(f"Warning: {cell} not found in {target_col}")
+                continue
+            else:
+                print(f"{cell}: {cell_size} cells detected")
             
             # Train/Test split
-            random.seed(42)
             shuffle_idx = random.sample(target_idx, cell_size)
             split_point = int(cell_size * train_ratio)
             train_idx = shuffle_idx[:split_point]
@@ -172,7 +193,15 @@ class LiverCellAtlas_Simulator(BaseSimulator):
                 pd.to_pickle(test_idx, os.path.join(save_dir, f'{cellname}_test_idx.pkl'))
         
         self.cell_idx_dict = cell_idx_dict
-    
+
+    def set_data(self, summary_df=None, cell_idx_dict=None, adata=None):
+        if summary_df is not None:
+            self.summary_df = summary_df
+        if cell_idx_dict is not None:
+            self.cell_idx_dict = cell_idx_dict
+        if adata is not None:
+            self.adata = adata
+
     def create_sim_bulk(self, pool_size=500, mode='train', adata_path=None):
         """Create simulated bulk expression data."""
         if self.summary_df is None or self.cell_idx_dict is None:
@@ -184,64 +213,36 @@ class LiverCellAtlas_Simulator(BaseSimulator):
         elif self.adata is not None:
             adata = self.adata
         else:
-            # Default path as fallback
-            adata_path = f"{self.base_dir}/datasource/scRNASeq/LiverCellAtlas/mouseStStAll/processed/liver_adata_148202x19052.h5ad"
-            adata = sc.read_h5ad(adata_path)
+            raise ValueError("Please specify the correct data path, or register the adata object!")
+        
+        # adataのQC
+        self._ensure_counts()
 
-        # log1p変換が行われているか判定 ==============================
-        if 'log1p' in adata.uns:
-            print("Log-transformation detected in adata.uns.")
-            # 元のデータを一応バックアップ
-            if 'log1p' not in adata.layers:
-                adata.layers['log1p'] = adata.X.copy()
-
-            # 逆変換を実行: exp(x) - 1
-            if issparse(adata.X):
-                # 疎行列の場合はデータ部分のみを計算
-                adata.X.data = np.expm1(adata.X.data)
-            else:
-                # 通常の行列の場合
-                adata.X = np.expm1(adata.X)
-
-            del adata.uns['log1p'] # 完全に消す場合
-        else:
-            pass
-        # ==========================================================
+        # expression matrixをnp.arrayのrawデータとして保持、重複ありの回収に対応
+        raw_exp = self._get_expression_matrix()
 
         total_cells = self.summary_df.columns.tolist()
         pooled_exp = []
         np.random.seed(42)
         
-        #reverse_dict = {v: k for k, v in self.filter_dict.items()}
-        
         for idx in tqdm(range(len(self.summary_df))):
             p_list = self.summary_df.iloc[idx].values
-            bulk_single = None
+            bulk_single = np.zeros(raw_exp.shape[1]) # 初期化を遺伝子数サイズの配列に変更
             
             for j, p in enumerate(p_list):
                 cell = total_cells[j]
-                #cellname = self.reverse_dict[cell]
                 cellname = cell
                 tmp_size = int(pool_size * p)
-                candi_idx = self.cell_idx_dict[cellname][mode]
+                candi_idx = self.cell_idx_dict[cellname][mode] # trainとtestはそれぞれ別で実行
 
                 # Generate reproducible random indices
                 rng = np.random.RandomState(42 + idx * len(total_cells) + j)
-                select_idx = rng.choice(candi_idx, size=tmp_size, replace=len(candi_idx) < tmp_size)
+                select_idx = rng.choice(candi_idx, size=tmp_size, replace=len(candi_idx) < tmp_size) # 細胞数が足りないときは重複を許可
                 
                 # Get expression data for selected cells
-                unique_cols = list(dict.fromkeys(select_idx))
-                tmp_adata = adata[adata.obs['cell_type'] == cellname, :].copy()
-                df = tmp_adata[unique_cols, :].to_df().T
-                
-                # Handle repeated selections
-                col_pos_map = {val: i for i, val in enumerate(unique_cols)}
-                col_map = [col_pos_map[i] for i in select_idx]
-                df_repeated = df.iloc[:, col_map]
-                tmp_sum = df_repeated.sum(axis=1).values
-
-                if tmp_sum.size > 0:
-                    bulk_single = tmp_sum if bulk_single is None else bulk_single + tmp_sum
+                # unique_colsを廃止して普通の足し合わせにしました。
+                # 外部でraw_expを作成しておくことで重複ありでも回収可能
+                bulk_single += np.array(raw_exp[select_idx].sum(axis=0)).flatten()
             
             if bulk_single is not None:
                 pooled_exp.append(bulk_single.flatten())
@@ -249,125 +250,35 @@ class LiverCellAtlas_Simulator(BaseSimulator):
         # Create DataFrame
         pooled_exp = np.array(pooled_exp)
         bulk_df = pd.DataFrame(pooled_exp.T)
-        bulk_df.index = df.index  # gene names
+        bulk_df.index = adata.var_names  # gene names
         return bulk_df
 
+    def _ensure_counts(self):
+        """adata.Xがlog1pならカウントに戻し、負の値を0にする処理"""
+        if self.adata is None: return
 
-class TSCA_Simulator(BaseSimulator):
-    def __init__(self, adata=None, sample_size=8000, method='dirichlet'):
-        super().__init__(sample_size, method)
-        self.adata = adata
-        self.immune_cells = ['NK', 'T_CD4', 'T_CD8_CytT', 'Monocyte', 'Mast_cells']
-        self.non_immune_cells = ['Fibroblast', 'Ciliated', 'Alveolar_Type1', 'Alveolar_Type2']
-    
-    def split_cell_idx(self, info_df=None, save_dir='./data/cell_idx', train_ratio=0.7):
-        """Split cell indices for TSCA data."""
-        if info_df is None:
-            info_df = self.adata.obs
-            
-        cell_types = self.immune_cells + self.non_immune_cells
-        cell_idx_dict = {}
-        
-        for cell in cell_types:
-            target_cell = info_df[info_df['Celltypes_updated_July_2020'] == cell]
-            target_idx = [info_df.index.tolist().index(t) for t in target_cell.index.tolist()]
-            cell_size = len(target_idx)
-            print(f"{cell}: {cell_size} cells detected")
-            
-            # Train/Test split
-            random.seed(42)
-            shuffle_idx = random.sample(target_idx, cell_size)
-            split_point = int(cell_size * train_ratio)
-            train_idx = shuffle_idx[:split_point]
-            test_idx = shuffle_idx[split_point:]
-            cell_idx_dict[cell] = {'train': train_idx, 'test': test_idx}
+        # 1. ログ変換の解除
+        if 'log1p' in self.adata.uns:
+            print("Log-transformation detected. Reverting to linear scale...")
+            # 直接adata.Xを上書き
+            if issparse(self.adata.X):
+                self.adata.X.data = np.expm1(self.adata.X.data)
+            else:
+                self.adata.X = np.expm1(self.adata.X)
+            del self.adata.uns['log1p'] # 対数変換した記録を削除
 
-            if save_dir:
-                os.makedirs(save_dir, exist_ok=True)
-                pd.to_pickle(train_idx, os.path.join(save_dir, f'{cell}_train_idx.pkl'))
-                pd.to_pickle(test_idx, os.path.join(save_dir, f'{cell}_test_idx.pkl'))
-        
-        self.cell_idx_dict = cell_idx_dict
-
-    def create_sim_bulk(self, pool_size=500, mode='train'):
-        """Create simulated bulk expression data for TSCA."""
-        if self.summary_df is None or self.cell_idx_dict is None:
-            raise ValueError("summary_df and cell_idx_dict must be set")
-            
-        total_cells = self.summary_df.columns.tolist()
-        raw_exp = self._get_expression_matrix()
-        pooled_exp = []
-        np.random.seed(42)
-        
-        for idx in tqdm(range(len(self.summary_df))):
-            p_list = self.summary_df.iloc[idx].values
-            final_idx = []
-            
-            for j, p in enumerate(p_list):
-                cell = total_cells[j]
-                tmp_size = int(pool_size * p)
-                candi_idx = self.cell_idx_dict[cell][mode]
-                
-                rng = np.random.RandomState(42 + idx * len(total_cells) + j)
-                select_idx = rng.choice(candi_idx, size=tmp_size, replace=len(candi_idx) < tmp_size)
-                final_idx.extend(select_idx)
-            
-            if final_idx:
-                tmp_sum = raw_exp[final_idx, :].sum(axis=0)
-                pooled_exp.append(tmp_sum.flatten())
-        
-        pooled_exp = np.array(pooled_exp)
-        bulk_df = pd.DataFrame(pooled_exp.T)
-        bulk_df.index = self.adata.var_names
-        return bulk_df
-
-
-class MyPBMC_Simulator:
-    def __init__(self, adata, adata_counts, cell_idx_dict=None, sample_size=8000):
-        self.adata = adata
-        self.adata_counts = adata_counts
-        self.sample_size = sample_size
-        self.cell_types = sorted(self.adata.obs['celltype'].unique().tolist())
-        
-        # Build cell index dictionary if not provided
-        if cell_idx_dict is not None:
-            self.cell_idx_dict = cell_idx_dict
+        # 2. 負の値を0に丸める (バッチ補正後の微小な負値を排除)
+        if issparse(self.adata.X):
+            self.adata.X.data = np.maximum(self.adata.X.data, 0)
         else:
-            raw_idx = self.adata.obs.index.tolist()
-            self.cell_idx_dict = {}
-            for c in self.cell_types:
-                tmp_idx = self.adata.obs[self.adata.obs['celltype'] == c].index.tolist()
-                self.cell_idx_dict[c] = [raw_idx.index(i) for i in tmp_idx]
-    
-    def create_sim_bulk(self, summary_df=None, pool_size=500):
-        """Create simulated bulk expression data for PBMC."""
-        if summary_df is None:
-            summary_df = self.summary_df
-            
-        pooled_exp = []
-        for idx in tqdm(range(len(summary_df))):
-            p_list = summary_df.iloc[idx].tolist()
-            final_idx = []
-            
-            for j, p in enumerate(p_list):
-                cell = self.cell_types[j]
-                tmp_size = int(pool_size * p)
-                candi_idx = self.cell_idx_dict[cell]
-                
-                # Random selection with reproducible seed
-                np.random.seed(seed=idx)
-                select_idx = np.random.choice(candi_idx, size=tmp_size, replace=len(candi_idx) < tmp_size)
-                final_idx.extend(select_idx)
-            
-            # Quality check
-            expected_range = (pool_size - len(self.cell_types), pool_size + len(self.cell_types))
-            if not (expected_range[0] <= len(final_idx) <= expected_range[1]):
-                print(f"Warning: {len(final_idx)} cells selected (expected ~{pool_size})")
+            self.adata.X = np.maximum(self.adata.X, 0)
+        
+        print("Data check: Negative values clipped to 0. This adata contains count data.")
 
-            # Sum expression counts
-            tmp_sum = list(np.array(self.adata_counts.X[final_idx].sum(axis=0))[0])
-            pooled_exp.append(tmp_sum)
 
-        bulk_df = pd.DataFrame(pooled_exp).T
-        bulk_df.index = self.adata_counts.var_names
-        return bulk_df
+class Liver_Simulator(BaseSimulator):
+    def __init__(self, adata, sample_size=8000, method='dirichlet'):
+        super().__init__(adata, sample_size, method)
+        self.parenchymal_cells = ['Hepatocytes']
+        self.supporting_cells = ['Cholangiocytes', 'Fibroblasts']
+        self.immune_cells = ['Neutrophils', 'Macrophages', 'Monocytes', 'NK', 'CD4Tcells', 'CD8Tcells', 'B cells', 'Dendritic']
